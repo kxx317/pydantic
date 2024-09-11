@@ -4,7 +4,7 @@ Tests for TypedDict
 
 import sys
 import typing
-from typing import Any, Dict, Generic, List, Optional, TypeVar
+from typing import Any, Dict, Generic, Iterable, List, Literal, Optional, TypeVar
 
 import pytest
 import typing_extensions
@@ -24,7 +24,7 @@ from pydantic import (
 )
 from pydantic._internal._decorators import get_attribute_from_bases
 from pydantic.functional_serializers import field_serializer, model_serializer
-from pydantic.functional_validators import field_validator, model_validator
+from pydantic.functional_validators import SkipValidation, field_validator, model_validator
 from pydantic.type_adapter import TypeAdapter
 
 from .conftest import Err
@@ -121,6 +121,73 @@ def test_typeddict_total_false(TypedDict, req_no_req):
     assert M(d=dict(foo='baz')).d == {'foo': 'baz'}
     with pytest.raises(ValidationError, match=r'd\.foo\s+Field required \[type=missing,'):
         M(d={})
+
+
+def test_typedict_class_with_iterable_field_do_not_overwrite_original_value_with_validation_iterator():
+    """https://github.com/pydantic/pydantic/issues/9467"""
+
+    class Function(TypedDict, total=False):
+        arguments: str
+        name: str
+
+    class ChatCompletionMessageToolCallParam(TypedDict, total=False):
+        id: str
+        """The ID of the tool call."""
+
+        function: Function
+        """The function that the model called."""
+
+        type: Literal['function']
+
+    class ChatCompletionContentPartTextParam(TypedDict, total=False):
+        text: str
+        type: Literal['text']
+
+    class ChatCompletionContentPartRefusalParam(TypedDict, total=False):
+        refusal: str
+        type: Literal['refusal']
+
+    class ChatCompletionAssistantMessageParam(TypedDict, total=False):
+        role: Literal['assistant']
+        content: str | Iterable[ChatCompletionContentPartTextParam | ChatCompletionContentPartRefusalParam] | None
+        function_call: Function
+        name: str
+        refusal: str | None
+        tool_calls: Annotated[Iterable[ChatCompletionMessageToolCallParam], SkipValidation]
+
+    class MyModel(BaseModel):
+        history: list[ChatCompletionAssistantMessageParam]
+
+    history = [
+        {
+            'content': None,
+            'role': 'assistant',
+            'tool_calls': [
+                {
+                    'id': 'id',
+                    'function': {
+                        'arguments': '{"location":"Tokyo, Japan"}',
+                        'name': 'GetCurrentWeather',
+                    },
+                    'type': 'function',
+                }
+            ],
+        },
+    ]
+    my_model = MyModel(history=history)
+    my_model2 = MyModel.model_validate({'history': history})
+    print(my_model.history)
+    print(my_model2.history)
+    assert 'ValidatorIterator' not in str(my_model.history)
+
+
+def test_temp_simple_iterable_show_as_validator_iterator_instance():
+    class MyModel(BaseModel):
+        x: Iterable[int]
+
+    model = MyModel(x=[1, 2, 3])
+    print(model.x)
+    assert 'ValidatorIterator' not in str(model.x)
 
 
 def test_typeddict(TypedDict):
